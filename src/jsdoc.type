@@ -1,0 +1,31 @@
+# Pure annotation text helpers. No host capabilities are required.
+DOC_ABOVE_RE = /\/\*\*([\s\S]*?)\*\/\s*(?:export\s+(?:default\s+)?)?(?:module\.exports\.(\w+)\s*=|exports\.(\w+)\s*=|(?:async\s+)?function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=)/g
+exports.buildAboveDocMap = (source) ->
+  map = {}
+  DOC_ABOVE_RE.lastIndex = 0
+  while (match = DOC_ABOVE_RE.exec(source)) isnt null
+    name = match[2] or match[3] or match[4] or match[5]
+    map[name] = match[1] if name and match[1] and not map[name]
+  map
+exports.docInside = (source) ->
+  match = source.match /\/\*\*([\s\S]*?)\*\//
+  if match then match[1] else null
+exports.resolveDoc = (fn, aboveMap) ->
+  inside = exports.docInside fn.toString()
+  return inside if inside
+  return aboveMap[fn.name] if fn.name and aboveMap[fn.name]
+  null
+exports.docLines = (doc) -> doc.split('\n').map (l) -> l.trim().replace /^\*\s?/, ''
+exports.tagValues = (doc, tag) ->
+  Array.from(doc.matchAll(new RegExp('@' + tag + '\\s+([^\\s]+)', 'g')), (m) -> m[1])
+exports.hasTag = (doc, tag) -> new RegExp('@' + tag + '\\b').test doc
+exports.parseReach = (doc) ->
+  raw = (exports.tagValues(doc, 'reach')[0] or '').toLowerCase()
+  if ['auto', 'always', 'manual'].includes(raw) then raw else 'auto'
+exports.parseConditions = (doc) ->
+  condition = {}
+  only = [...exports.tagValues(doc, 'only'), ...exports.tagValues(doc, 'when')]
+  never = exports.tagValues doc, 'never'
+  condition.only = only if only.length
+  condition.never = never if never.length
+  condition

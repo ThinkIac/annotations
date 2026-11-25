@@ -1,0 +1,17 @@
+# Optional Node host adapter. Import this explicitly, never from the pure core.
+fs = require 'node:fs'
+path = require 'node:path'
+exports.create = (scanners) ->
+  require('./manifest.cjs').create scanners, {
+    readPackage: (folder) ->
+      try
+        JSON.parse fs.readFileSync(path.join(folder, 'package.json'), 'utf8')
+      catch
+        {}
+    basename: (folder) -> path.basename folder
+    now: -> new Date().toISOString()
+    writeManifest: (folder, file, text) ->
+      target = path.join folder, file
+      fs.writeFileSync target, text, 'utf8'
+      target
+  }

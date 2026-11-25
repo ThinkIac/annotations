@@ -1,0 +1,30 @@
+# Capability injection keeps filesystem and path semantics outside the core.
+exports.create = (scanners, capabilities) ->
+  api = {}
+  api.generateManifest = (folder) ->
+    folderPath = scanners.resolveAgentFolder folder
+    throw new Error 'Folder not found' unless folderPath
+    pkg = await capabilities.readPackage folderPath
+    [tools, hooks, routes, commands] = await Promise.all [
+      scanners.registerTools(folderPath), scanners.registerHooks(folderPath)
+      scanners.registerRoutes(folderPath), scanners.registerCommands(folderPath)
+    ]
+    {
+      name: pkg.name or capabilities.basename(folderPath)
+      version: pkg.version, description: pkg.description
+      tools: tools.map (t) ->
+        {name: t.name, description: t.description ? null, parameters: t.parameters, reach: t.reach or 'auto', recoveryPolicy: t.recoveryPolicy or null, reconcileTool: t.reconcileTool or null}
+      hooks: hooks.map (h) -> {event: h.event, priority: h.priority}
+      routes: routes.map (r) -> {path: r.path, method: r.method}
+      commands: commands.map (c) ->
+        item = {name: c.name, description: c.description ? null, parameters: c.parameters}
+        item.order = c.order if c.order
+        item
+      generatedAt: capabilities.now()
+    }
+  api.writeManifest = (folder, outFile = 'logos.json') ->
+    folderPath = scanners.resolveAgentFolder folder
+    throw new Error 'Folder not found' unless folderPath
+    manifest = await api.generateManifest folderPath
+    await capabilities.writeManifest folderPath, outFile, JSON.stringify(manifest, null, 2) + '\n'
+  api

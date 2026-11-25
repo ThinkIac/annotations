@@ -1,0 +1,181 @@
+# Compatibility parsers: metadata only; handlers are never executed here.
+{docLines, tagValues, hasTag, parseReach, parseConditions} = require './jsdoc.cjs'
+PARAM_RE = /@params? {([^}]+)} (\S+)(?: - (.*))?$/
+UNION_RE = /^\((.+)\)$/
+ENUM_RE = /@enum\s+(\S+)/
+ENUM_SOURCE_RE = /@enumSource\s+(\S+)/
+parseUnion = (type) ->
+  match = type.match UNION_RE
+  return null unless match
+  values = match[1].split('|').map((v) -> v.trim().replace /^['"]|['"]$/g, '').filter Boolean
+  if values.length then values else null
+parseParams = (lines) ->
+  parameters = []
+  paramMap = {}
+  for line in lines
+    continue unless line.startsWith '@param'
+    match = line.match PARAM_RE
+    continue unless match
+    [, type, name, description = ''] = match
+    required = not type.endsWith '?'
+    type = type.slice(0, -1) unless required
+    enumMatch = description.match ENUM_RE
+    sourceMatch = description.match ENUM_SOURCE_RE
+    description = description.replace(ENUM_SOURCE_RE, '').replace(ENUM_RE, '').trim()
+    unionValues = parseUnion type
+    type = 'string' if unionValues
+    values = if enumMatch then enumMatch[1].split(',').map((v) -> v.trim()).filter(Boolean) else unionValues
+    enumSource = if sourceMatch then sourceMatch[1] else null
+    cleanName = name.replace /\[\]/g, ''
+    if cleanName.includes '.'
+      parentName = cleanName.split('.')[0]
+      unless paramMap[parentName]
+        parent = {name: parentName, type: (if name.includes('[]') then 'array' else 'object'), description: "#{parentName} object", required}
+        parameters.push parent
+        paramMap[parentName] = parent
+      else if required
+        paramMap[parentName].required = true
+    param = {name, type, description, required}
+    param.enum = values if values and values.length
+    param.enumSource = enumSource if enumSource
+    parameters.push param
+    paramMap[name] = param
+  parameters
+getDescription = (lines) ->
+  line = lines.find (l) -> l.startsWith '@description'
+  if line then line.replace('@description', '').trim() else null
+exports.OFFLINE_POLICIES = ['cache', 'online']
+exports.parseOffline = (doc, method = 'get') ->
+  match = doc.match /@offline\s+(\S+)/
+  return 'online' unless match
+  value = match[1].trim().toLowerCase()
+  if value is 'queue'
+    throw new Error '[logos] @offline queue ainda não existe: fila de escrita exige dedupe por chave de idempotência no servidor, senão o reenvio duplica o registro. Remova a anotação (rotas sem @offline já são "online") até a fila existir.'
+  unless exports.OFFLINE_POLICIES.includes value
+    throw new Error "[logos] @offline \"#{value}\" desconhecido — use #{exports.OFFLINE_POLICIES.join(' ou ')}. Valor inválido é erro de carregamento, e não \"online\" silencioso, para que a política nunca prometa menos do que o autor escreveu."
+  if value is 'cache' and method isnt 'get'
+    throw new Error "[logos] @offline cache só vale para GET (esta rota é #{method.toUpperCase()}). Servir uma mutação do cache devolveria uma resposta antiga para uma escrita que nunca aconteceu."
+  value
+registration = (doc, kind) ->
+  lines = docLines doc
+  legacy = lines.map((line) -> line.match new RegExp('^@register_' + kind + '[ \\t]+([^\\s@]+)')).find Boolean
+  return {value: legacy[1], legacy: true} if legacy
+  modern = lines.map((line) -> line.match new RegExp('^@register[ \\t]+' + kind + '(?:[ \\t]+([^\\s@]+))?(?:[ \\t]|$)')).find Boolean
+  return null unless modern
+  name = modern[1] or lines.map((line) -> line.match /^@name[ \t]+([^\s@]+)/).find(Boolean)?[1]
+  throw new Error "[logos] @register #{kind} requires a name" unless name
+  {value: name, legacy: false}
+exports.parseRoute = (fn, doc) ->
+  return null unless typeof fn is 'function' and doc
+  route = registration doc, 'router'
+  return null unless route
+  methodMatch = doc.match /@method\s+([^\s]+)/
+  direction = doc.match /@direction\s+(\S+)/
+  channel = doc.match /@channel\s+(\S+)/
+  uploadMatch = doc.match /@upload\s+(\S+)(?:\s+(\d+))?(?:\s+(\d+(?:kb|mb|gb)))?(?:\s+(memory|disk))?/i
+  upload = null
+  if uploadMatch
+    upload = {field: uploadMatch[1], quantity: (if uploadMatch[2] then Number(uploadMatch[2]) else 1), size: uploadMatch[3] or '10mb', storage: uploadMatch[4] or 'disk'}
+  method = if methodMatch then methodMatch[1].trim().toLowerCase() else 'get'
+  publicMatch = doc.match /@public(?:\s+(\S+))?/
+  isPublic = false
+  if publicMatch
+    value = (publicMatch[1] or 'true').toLowerCase()
+    throw new Error "[logos] @public \"#{value}\" inválido — use true, false, ou omita o valor." unless value in ['true', 'false']
+    isPublic = value is 'true'
+  {
+    path: (if route.legacy then route.value else route.value.replace /^\/+/, '')
+    method, public: isPublic, handler: fn, upload
+    offline: exports.parseOffline doc, method
+    streaming: /@streaming\b/.test doc
+    stream: /@stream\b/.test doc
+    direction: (if direction then direction[1].trim() else 'bidirectional')
+    channel: (if channel then channel[1].trim() else null)
+    credentialRequired: hasTag(doc, 'requireCredential') or hasTag(doc, 'auth')
+    condition: parseConditions doc
+  }
+exports.parseTool = (fn, doc) ->
+  return null unless typeof fn is 'function' and doc
+  lines = docLines doc
+  registerLine = lines.find (l) -> l.startsWith '@register_tool'
+  modern = unless registerLine then registration(doc, 'tool') else null
+  return null unless registerLine or modern
+  registerMatch = registerLine?.match /@register_tool\s*(\S+)?/
+  name = modern?.value or (registerMatch and registerMatch[1]) or fn.name or 'anonymousTool'
+  raw = (tagValues(doc, 'recovery')[0] or '').toLowerCase()
+  {
+    name, description: getDescription(lines), parameters: parseParams(lines), call: fn
+    condition: parseConditions doc
+    reach: parseReach doc
+    recoveryPolicy: (if raw in ['none', 'read-only', 'idempotent', 'reconcile'] then raw else null)
+    reconcileTool: tagValues(doc, 'reconcile')[0] or null
+  }
+exports.parseHook = (fn, doc) ->
+  return null unless typeof fn is 'function' and doc
+  match = registration doc, 'hook'
+  return null unless match
+  priority = doc.match /@priority\s+(\d+)/
+  {event: match.value, call: fn, priority: (if priority then parseInt(priority[1], 10) else 100), condition: parseConditions(doc)}
+parseCommandArguments = (lines, parameters) ->
+  byName = new Map parameters.map (p) -> [p.name, p]
+  used = new Set [...byName.keys(), 'help', 'h', 'params']
+  order = []
+  current = undefined
+  for line in lines
+    [, tag, value = ''] = line.match(/^@(param|parameter|alias|order)(?:\s+(.*))?$/) or []
+    current = line.match(PARAM_RE)?[2] if tag is 'param'
+    current = value.trim() if tag is 'parameter'
+    if tag is 'alias'
+      parameter = byName.get current
+      throw new Error '@alias requires a declared parameter and at least one alias' unless parameter and value.trim()
+      for alias in value.trim().split /[\s,]+/
+        throw new Error "Invalid command alias: #{alias}" unless /^[a-zA-Z][\w-]*$/.test alias
+        throw new Error "Conflicting command alias: #{alias}" if used.has alias
+        used.add alias
+        (parameter.aliases ?= []).push alias
+    if tag is 'order'
+      throw new Error '@order requires at least one parameter' unless value.trim()
+      for name in value.split(',').map((item) -> item.trim())
+        throw new Error "Unknown parameter in @order: #{name}" unless byName.has name
+        throw new Error "Duplicate parameter in @order: #{name}" if order.includes name
+        order.push name
+  order
+exports.parseCommand = (fn, doc) ->
+  return null unless typeof fn is 'function' and doc
+  lines = docLines doc
+  line = lines.find (l) -> l.startsWith '@register_command'
+  return null unless line
+  match = line.match /@register_command\s*(\S+)?/
+  parameters = parseParams lines
+  order = parseCommandArguments lines, parameters
+  cli = lines.find((l) -> l.startsWith '@cli_runtime')?.match /^@cli_runtime\s+(minimal|full)$/
+  result = {
+    name: (match and match[1]) or fn.name or 'anonymousCommand'
+    description: getDescription lines
+    parameters, call: fn, condition: parseConditions(doc), cliRuntime: cli?[1] ? 'minimal'
+  }
+  result.order = order if order.length
+  result
+exports.parsePredicate = (fn, doc) ->
+  return null unless typeof fn is 'function' and doc
+  match = doc.match /@register_predicate\s*(\w+)?/
+  return null unless match
+  name = match[1] or fn.name or null
+  if name then {name, call: fn} else null
+exports.parseMiddleware = (fn, doc) ->
+  return null unless typeof fn is 'function' and doc
+  match = doc.match /@register_middleware\s+(\w+)/
+  return null unless match
+  {name: match[1], call: fn, predicates: Array.from(doc.matchAll(/@predicate\s+(\w+)/g), (m) -> m[1])}
+exports.parseModule = (fn, doc) ->
+  return null unless typeof fn is 'function' and doc
+  match = doc.match /@register_module\s+([^\s]+)/
+  return null unless match
+  phase = doc.match /@phase\s+(boot|wire)/
+  runtime = doc.match /@runtime\s+(\S+)/
+  {
+    name: match[1].trim(), phase: (if phase then phase[1] else 'wire')
+    after: tagValues(doc, 'after'), swappable: not /@swappable\s+false/.test(doc)
+    runtime: (if runtime then runtime[1].trim() else 'node')
+    events: tagValues(doc, 'events'), install: fn
+  }

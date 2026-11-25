@@ -1,0 +1,8 @@
+# Availability is evaluated per invocation, never cached with declarations.
+exports.resolveConditions = (condition = {}, context = {}) ->
+  await Promise.resolve()
+  for key in [...(condition.only or []), ...(condition.when or [])]
+    return false unless context[key]
+  for key in condition.never or []
+    return false if context[key]
+  true

@@ -1,0 +1,31 @@
+{
+  "name": "@thinkiac/module-annotations",
+  "version": "0.2.0",
+  "description": "Portable annotation parsers and compatibility adapters for Logos, authored in LogosType",
+  "main": "index.cjs",
+  "files": [
+    "src",
+    "dist",
+    "scripts",
+    "*.cjs",
+    "README.md",
+    "docs",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ThinkIac/annotations.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.cjs",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "logostype": "git+https://github.com/ThinkIac/LogosType.git#acdcc6032ab94219e0d4a4d25b1538fb55fa19cf"
+  }
+}

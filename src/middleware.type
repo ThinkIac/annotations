@@ -1,0 +1,38 @@
+exports.create = (scanners) ->
+  api = {}
+  api.loadMiddlewareSnapshot = (folder) ->
+    predicatesList = []
+    middlewares = []
+    try
+      predicatesList = await scanners.registerPredicates folder
+    catch
+      # Preserve the legacy missing-folder behavior.
+    try
+      middlewares = await scanners.registerMiddlewares folder
+    catch
+      # Preserve the legacy missing-folder behavior.
+    predicates = {}
+    predicates[p.name] = p.call for p in predicatesList
+    {predicates, middlewares}
+  api.resolveMiddlewares = (folder, context, snapshot) ->
+    {predicates, middlewares} = snapshot ? await api.loadMiddlewareSnapshot folder
+    allowed = []
+    for middleware in middlewares
+      ok = true
+      for name in middleware.predicates or []
+        fn = predicates[name]
+        if typeof fn is 'function'
+          unless await fn(context)
+            ok = false
+            break
+      allowed.push middleware if ok
+    allowed
+  api.runMiddlewares = (middlewares, context, handler) ->
+    idx = 0
+    next = ->
+      if idx < middlewares.length
+        mw = middlewares[idx++]
+        return mw.call context, next
+      handler()
+    await next()
+  api

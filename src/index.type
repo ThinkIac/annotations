@@ -1,0 +1,33 @@
+{parseTool, parseHook, parseRoute, parseCommand, parsePredicate, parseMiddleware} = require './parsers.cjs'
+scanners = new WeakMap()
+JSON_SCHEMA_TYPES = new Set ['string', 'number', 'integer', 'boolean', 'object', 'array', 'null']
+toJsonSchemaProperty = (param) ->
+  aliases = {Int: 'integer', Float: 'number', String: 'string', Boolean: 'boolean', DateTime: 'string', Json: 'object'}
+  raw = param.type
+  rawType = if raw.endsWith('[]') then (aliases[raw.slice(0, -2)] or raw.slice(0, -2)) + '[]' else aliases[raw] or raw
+  extra = {}
+  extra.enum = param.enum if param.enum and param.enum.length
+  extra['x-enumSource'] = param.enumSource if param.enumSource
+  if typeof rawType is 'string' and rawType.endsWith '[]'
+    item = rawType.slice 0, -2
+    return {type: 'array', items: {type: (if JSON_SCHEMA_TYPES.has(item) then item else 'string'), ...extra}, description: param.description}
+  {type: (if JSON_SCHEMA_TYPES.has(rawType) then rawType else 'string'), description: param.description, ...extra}
+exports.createScanners = (registerGeneric) ->
+  return scanners.get(registerGeneric) if scanners.has registerGeneric
+  api = {}
+  api.registerTools = (folder) ->
+    registerGeneric folder, parseTool, 'tools', (meta) ->
+      properties = {}
+      properties[p.name] = toJsonSchemaProperty(p) for p in meta.parameters or []
+      {
+        name: meta.name, description: meta.description
+        parameters: {type: 'object', properties, required: (meta.parameters or []).filter((p) -> p.required).map((p) -> p.name)}
+        call: meta.call, condition: meta.condition, _file: meta._file
+      }
+  api.registerCommands = (folder) -> registerGeneric folder, parseCommand, 'commands'
+  api.registerHooks = (folder) -> registerGeneric folder, parseHook, 'hooks'
+  api.registerRoutes = (folder) -> registerGeneric folder, parseRoute, 'routes'
+  api.registerPredicates = (folder) -> registerGeneric folder, parsePredicate, 'predicates'
+  api.registerMiddlewares = (folder) -> registerGeneric folder, parseMiddleware, 'middlewares'
+  scanners.set registerGeneric, api
+  api
